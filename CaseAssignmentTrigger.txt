@@ -1,0 +1,48 @@
+trigger CaseAssignmentTrigger on Case (before insert) {
+    // Retrieve active case routing configurations
+    List<Case_Routing__c> activeRoutes = [SELECT Id, User__c, Category__c FROM Case_Routing__c WHERE isActive__c = true];
+    
+    // Group active routing configurations by category
+    Map<String, List<Case_Routing__c>> categoryRoutesMap = new Map<String, List<Case_Routing__c>>();
+    for (Case_Routing__c route : activeRoutes) {
+        if (!categoryRoutesMap.containsKey(route.Category__c)) {
+            categoryRoutesMap.put(route.Category__c, new List<Case_Routing__c>());
+        }
+        categoryRoutesMap.get(route.Category__c).add(route);
+    }
+    
+    for (Case newCase : Trigger.new) {
+        String caseCategory = newCase.Category__c;
+        if (categoryRoutesMap.containsKey(caseCategory)) {
+            List<Case_Routing__c> routes = categoryRoutesMap.get(caseCategory);
+            
+            // Find the next available user in rotation
+            for (Case_Routing__c route : routes) {
+                if (route.User__c != null) {
+                    newCase.OwnerId = route.User__c;
+                    break;
+                }
+            }
+            
+            // Rotate the routes
+            Case_Routing__c firstRoute = routes.remove(0);
+            routes.add(firstRoute);
+            
+            // Check if all users have been assigned a record
+            boolean allUsersAssigned = true;
+            for (Case_Routing__c route : routes) {
+                if (route.User__c != null) {
+                    allUsersAssigned = false;
+                    break;
+                }
+            }
+            
+            // If all users have been assigned a record, reset the rotation
+            if (allUsersAssigned) {
+                routes = categoryRoutesMap.get(caseCategory); // Reset to original order
+            }
+        }
+    }
+}
+
+
