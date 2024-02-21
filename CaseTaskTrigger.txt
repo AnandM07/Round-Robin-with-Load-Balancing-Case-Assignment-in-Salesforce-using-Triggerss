@@ -1,0 +1,69 @@
+trigger CaseAssignmentTrigger on Case (before insert, before update) {
+    if (Trigger.isBefore) {
+        // Determine if it's an insert operation
+        Boolean isInsert = Trigger.isInsert;
+
+        // Initialize maps to track assignment counts and last assigned users
+        Map<String, Id> lastAssignedUser = new Map<String, Id>(); // Map to store last assigned user for each category
+        Map<Id, Integer> userAssignmentCounts = new Map<Id, Integer>(); // Map to store the number of cases assigned to each user
+
+        // Fetch existing cases for both insert and update contexts
+        Set<String> categorySet = new Set<String>(); // Set to store unique categories from new cases
+        for (Case newCase : Trigger.new) {
+            if (newCase.Category__c != null) {
+                categorySet.add(newCase.Category__c); // Add category to the set
+            }
+        }
+        
+        if (!categorySet.isEmpty()) {
+            // Query existing cases grouped by category and owner
+            List<AggregateResult> aggregateResults = [SELECT Category__c, OwnerId, COUNT(Id) caseCount FROM Case WHERE Category__c IN :categorySet GROUP BY Category__c, OwnerId];
+            for (AggregateResult aggResult : aggregateResults) {
+                String category = (String)aggResult.get('Category__c');
+                Id ownerId = (Id)aggResult.get('OwnerId');
+                Integer caseCount = (Integer)aggResult.get('caseCount');
+                lastAssignedUser.put(category, ownerId); // Store last assigned user for the category
+                userAssignmentCounts.put(ownerId, caseCount); // Store the number of cases assigned to the user
+            }
+        }
+
+        // Query active case routings
+        List<Case_Routing__c> activeRoutings = [SELECT Id, Category__c, User__c FROM Case_Routing__c WHERE isActive__c = true];
+
+        // Iterate over new cases
+        for (Case newCase : Trigger.new) {
+            if (newCase.Category__c != null) {
+                // If it's an insert or the category has not been assigned before, find the next user for the category
+                if (isInsert || !lastAssignedUser.containsKey(newCase.Category__c)) {
+                    for (Case_Routing__c routing : activeRoutings) {
+                        if (routing.Category__c == newCase.Category__c && (userAssignmentCounts.get(routing.User__c) == null || userAssignmentCounts.get(routing.User__c) < 5)) { // Change '5' to the desired threshold
+                            newCase.OwnerId = routing.User__c; // Assign the case to the user
+                            lastAssignedUser.put(newCase.Category__c, routing.User__c); // Update last assigned user for the category
+                            if (userAssignmentCounts.containsKey(routing.User__c)) {
+                                userAssignmentCounts.put(routing.User__c, userAssignmentCounts.get(routing.User__c) + 1); // Increment case count for the user
+                            } else {
+                                userAssignmentCounts.put(routing.User__c, 1); // Initialize case count for the user
+                            }
+                            break; // Exit loop after assigning the case
+                        }
+                    }
+                } else {
+                    // If the category has been assigned before, assign it to the next user in rotation
+                    Id lastAssignedUserId = lastAssignedUser.get(newCase.Category__c);
+                    for (Case_Routing__c routing : activeRoutings) {
+                        if (routing.User__c == lastAssignedUserId && routing.Category__c == newCase.Category__c) {
+                            newCase.OwnerId = routing.User__c; // Assign the case to the user
+                            lastAssignedUser.put(newCase.Category__c, routing.User__c); // Update last assigned user for the category
+                            if (userAssignmentCounts.containsKey(routing.User__c)) {
+                                userAssignmentCounts.put(routing.User__c, userAssignmentCounts.get(routing.User__c) + 1); // Increment case count for the user
+                            } else {
+                                userAssignmentCounts.put(routing.User__c, 1); // Initialize case count for the user
+                            }
+                            break; // Exit loop after assigning the case
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
